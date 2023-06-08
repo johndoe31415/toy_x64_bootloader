@@ -1,0 +1,5 @@
+disasm switch-mode
+#b 0x7c00
+#b 0x9000
+#b 0x9000
+c

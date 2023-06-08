@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+#	toy_x64_bootloader - Minimal bootloader for x86_64 using long mode and PML4
+#	Copyright (C) 2023-2023 Johannes Bauer
+#
+#	This file is part of toy_x64_bootloader.
+#
+#	toy_x64_bootloader is free software; you can redistribute it and/or modify
+#	it under the terms of the GNU General Public License as published by
+#	the Free Software Foundation; this program is ONLY licensed under
+#	version 3 of the License, later versions are explicitly excluded.
+#
+#	toy_x64_bootloader is distributed in the hope that it will be useful,
+#	but WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#	GNU General Public License for more details.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with toy_x64_bootloader; if not, write to the Free Software
+#	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+#	Johannes Bauer <JohannesBauer@gmx.de>
+
+import sys
+import subprocess
+import os
+import contextlib
+import tempfile
+from FriendlyArgumentParser import FriendlyArgumentParser
+from CmdlineEscape import CmdlineEscape
+
+parser = FriendlyArgumentParser(description = "Build and run bootloader code.")
+parser.add_argument("--disk-size", metavar = "kib", type = int, default = 1024, help = "Disk size in kiB. Defaults to %(default)d")
+parser.add_argument("-t", "--target-directory", metavar = "path", default = "target", help = "Output directory for objects. Defaults to %(default)s")
+parser.add_argument("-n", "--no-build", action = "store_true", help = "Do not build code.")
+mutex = parser.add_mutually_exclusive_group()
+mutex.add_argument("-b", "--run-bochs", action = "store_true", help = "Run code using Bochs.")
+mutex.add_argument("-r", "--run-qemu", action = "store_true", help = "Run code using QEMU.")
+parser.add_argument("--no-optimization", action = "store_true", help = "Disable compilation of code using optimization.")
+parser.add_argument("-d", "--debug", action = "store_true", help = "Enable debugging; for QEMU, make it listen for a gdb connection. For Bochs, start in debugging mode.")
+parser.add_argument("-v", "--verbose", action = "count", default = 0, help = "Increases verbosity. Can be specified multiple times to increase.")
+parser.add_argument("asm_src", help = "Assembly source code to build")
+args = parser.parse_args(sys.argv[1:])
+
+class BootcodeBuilder():
+	def __init__(self, args):
+		self._args = args
+		self._prefix = os.path.splitext(self._args.asm_src)[0]
+		self._bootloader = None
+		self._stage1 = None
+		self._stage2 = None
+
+	@staticmethod
+	def _lba_to_chs(lba):
+		hpc = 255	# Heads per cylinder
+		spt = 63	# Sectory per track
+		c = lba // (hpc * spt)
+		h = (lba // spt) % hpc
+		s = (lba % spt) + 1
+		c = c & ((1 << 10) - 1)
+		h = h & ((1 << 8) - 1)
+		s = s & ((1 << 6) - 1)
+		return bytes([ h, s | ((c & 0x300) >> 2), c & 0xff ])
+
+	@property
+	def disk_size(self):
+		return self._args.disk_size * 1024
+
+	@property
+	def bootloader_bin_filename(self):
+		return f"{args.target_directory}/{self._prefix}_bootloader.bin"
+
+	@property
+	def bootloader_elf_filename(self):
+		return f"{args.target_directory}/{self._prefix}_bootloader.elf"
+
+	@property
+	def stage1_c_filename(self):
+		return f"{self._prefix}_stage1.c"
+
+	@property
+	def stage1_s_filename(self):
+		return f"{self._prefix}_stage1.s"
+
+	@property
+	def stage1_bin_filename(self):
+		return f"{args.target_directory}/{self._prefix}_stage1.bin"
+
+	@property
+	def stage1_elf_filename(self):
+		return f"{args.target_directory}/{self._prefix}_stage1.elf"
+
+	@property
+	def stage2_c_filename(self):
+		return f"{self._prefix}_stage2.c"
+
+	@property
+	def stage2_bin_filename(self):
+		return f"{args.target_directory}/{self._prefix}_stage2.bin"
+
+	@property
+	def stage2_elf_filename(self):
+		return f"{args.target_directory}/{self._prefix}_stage2.elf"
+
+	@property
+	def disk_image_filename(self):
+		return f"{args.target_directory}/{self._prefix}.img"
+
+	@property
+	def bochs_lockfile(self):
+		return f"{self.disk_image_filename}.lock"
+
+	@property
+	def optimization_options(self):
+		if self._args.no_optimization:
+			return [ "-O0" ]
+		else:
+			return [ "-O3" ]
+
+	@property
+	def common_gcc_options(self):
+		return [ "-Wl,--build-id=none", "-Wl,--no-warn-rwx-segments", "-ggdb3" ]
+
+	def _build_bootloader(self):
+		self._execute([ "gcc" ] + self.common_gcc_options + [ "-T", "bootloader.ld", "-no-pie", "-m32", "-nostdlib", "-o", self.bootloader_elf_filename, self._args.asm_src ])
+		self._execute([ "objcopy", "-j", ".text", "-j", ".data", "-O", "binary", self.bootloader_elf_filename, self.bootloader_bin_filename ])
+		if args.verbose >= 2:
+			self._execute([ "objdump", "-D", "-M", "i8086", self.bootloader_elf_filename ])
+		with open(self.bootloader_bin_filename, "rb") as f:
+			bootloader = f.read()
+		if self._args.verbose >= 1:
+			print(f"Bootloader size: {len(bootloader)} bytes")
+
+		if len(bootloader) > 440:
+			raise Exception(f"Bootloader too large (was {len(bootloader)} bytes, max size 440 bytes).")
+		self._bootloader = bootloader
+
+	def _build_stage1(self):
+		stage1_source_files = [ ]
+		if os.path.isfile(self.stage1_c_filename):
+			stage1_source_files.append(self.stage1_c_filename)
+		if os.path.isfile(self.stage1_s_filename):
+			stage1_source_files.append(self.stage1_s_filename)
+		if len(stage1_source_files) == 0:
+			return
+
+		self._execute([ "gcc" ] + self.optimization_options + self.common_gcc_options + [ "-no-pie", "-Wall", "-nostdlib", "-T", "stage1.ld", "-o", self.stage1_elf_filename ] + stage1_source_files)
+		if args.verbose >= 2:
+			self._execute([ "objdump", "-d", self.stage1_elf_filename ])
+		self._execute([ "objcopy", "-j", ".text", "-j", ".data", "-O", "binary", self.stage1_elf_filename, self.stage1_bin_filename ])
+		with open(self.stage1_bin_filename, "rb") as f:
+			self._stage1 = f.read()
+
+	def _build_stage2(self):
+		if not os.path.isfile(self.stage2_c_filename):
+			# No stage2 present
+			return
+		self._execute([ "gcc" ] + self.optimization_options + self.common_gcc_options + [ "-no-pie", "-Wall", "-nostdlib", "-T", "stage2.ld", "-o", self.stage2_elf_filename, self.stage2_c_filename ])
+		if args.verbose >= 2:
+			self._execute([ "objdump", "-d", self.stage2_elf_filename ])
+		self._execute([ "objcopy", "-j", ".text", "-j", ".data", "-O", "binary", self.stage2_elf_filename, self.stage2_bin_filename ])
+		with open(self.stage2_bin_filename, "rb") as f:
+			self._stage2 = f.read()
+
+	def _execute(self, cmd):
+		if self._args.verbose >= 1:
+			print(CmdlineEscape().cmdline(cmd))
+		subprocess.check_call(cmd)
+
+	def _run_qemu(self):
+		cmd = [ ]
+		cmd += [ "qemu-system-x86_64" ]
+		cmd += [ "-m", "1024" ]
+		cmd += [ "-smp", "1" ]
+		#cmd += [ "-usb", "-device", "usb-storage,drive=usbstick,bootindex=0", "-drive", f"file={self.disk_image_filename},format=raw,if=none,id=usbstick" ]
+		cmd += [ "-drive", f"file={self.disk_image_filename},media=disk,format=raw" ]
+		if self._args.debug:
+			cmd += [ "-gdb", "tcp::9000", "-S" ]
+		self._execute(cmd)
+
+	def _run_bochs(self):
+		with contextlib.suppress(FileNotFoundError):
+			os.unlink(self.bochs_lockfile)
+		with tempfile.NamedTemporaryFile(prefix = "bochsrc_", mode = "w") as f:
+			print("romimage: file=/usr/local/share/bochs/BIOS-bochs-latest, options=fastboot", file = f)
+			print("vgaromimage: file=/usr/local/share/bochs/VGABIOS-lgpl-latest", file = f)
+			print(f"ata0-master: type=disk, path=\"{self.disk_image_filename}\"", file = f)
+			print("boot: disk", file = f)
+			print("megs: 64", file = f)
+			if self._args.debug:
+				print("display_library: sdl2, options=\"gui_debug\"", file = f)
+			f.flush()
+			cmd = [ ]
+			cmd += [ "bochs" ]
+			cmd += [ "-q" ]
+			cmd += [ "-f", f.name ]
+			if os.path.isfile(".bochsinit"):
+				cmd += [ "-rc", ".bochsinit" ]
+			self._execute(cmd)
+
+	def _partition_table_entry(self, start_lba, length_sectors, bootable = False, part_id = 0x83):
+		entry = bytearray()
+		end_lba = start_lba + length_sectors
+		entry += bytes.fromhex("80" if bootable else "00")				# Bootable
+		entry += self._lba_to_chs(start_lba)							# Start CHS
+		entry += bytes([ part_id ])										# Partition system ID
+		entry += self._lba_to_chs(end_lba)								# End CHS
+		entry += start_lba.to_bytes(length = 4, byteorder = "little")	# Relative sector
+		entry += length_sectors.to_bytes(length = 4, byteorder = "little")	# Total sector count
+		return entry
+
+	@staticmethod
+	def _pad_to(data, length):
+		return data + bytes(length - len(data))
+
+	def _create_disk_image(self):
+		with open(self.disk_image_filename, "wb") as f:
+			# Pad with zeros first (minimum size required by bochs)
+			f.truncate(1024 * 1024)
+
+			# Write MBR
+			assert(len(self._bootloader) < 440)
+			f.write(self._bootloader)
+
+			f.seek(440)
+			f.write(os.urandom(4))		# Disk signature
+
+			# Now partition table, 4 x 16 bytes
+			if self._stage1 is not None:
+				# Partition 1
+				f.seek(446 + (0 * 16))
+				f.write(self._partition_table_entry(start_lba = 1, length_sectors = 128, bootable = True))
+
+				# Content
+				f.seek(512)
+				f.write(self._pad_to(self._stage1, 0x10000))
+
+			if self._stage2 is not None:
+				# Partition 2
+				f.seek(446 + (1 * 16))
+				length_sectors = (len(self._stage2) + 511) // 512
+				f.write(self._partition_table_entry(start_lba = 129, length_sectors = length_sectors))
+
+				# Content
+				f.seek(512 * 129)
+				f.write(self._pad_to(self._stage2, length_sectors * 512))
+
+			# MBR signature
+			f.seek(512 - 2)
+			f.write(bytes.fromhex("55 aa"))
+
+	def run(self):
+		with contextlib.suppress(FileExistsError):
+			os.makedirs(args.target_directory)
+
+		if not args.no_build:
+			self._build_bootloader()
+			self._build_stage1()
+			self._build_stage2()
+		if self._args.verbose >= 1:
+			if self._bootloader is not None:
+				print(f"{len(self._bootloader)} bytes bootloader present.")
+			if self._stage1 is not None:
+				print(f"{len(self._stage1)} bytes stage1 present.")
+			if self._stage2 is not None:
+				print(f"{len(self._stage2)} bytes stage2 present.")
+
+		self._create_disk_image()
+
+		if args.run_qemu:
+			self._run_qemu()
+		elif args.run_bochs:
+			self._run_bochs()
+
+bcb = BootcodeBuilder(args)
+bcb.run()
