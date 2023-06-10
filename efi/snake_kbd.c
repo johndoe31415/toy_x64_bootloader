@@ -23,37 +23,47 @@
 
 #include <efi.h>
 #include <efilib.h>
-#include <stdint.h>
+#include <efibind.h>
 #include <stdbool.h>
+#include "snake_kbd.h"
 
-static uint64_t get_cr0(void) {
-	uint64_t cr0;
-	__asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
-	return cr0;
-}
+static EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL *protocol;
 
-static uint64_t* get_cr3(void) {
-	uint64_t *cr3;
-	__asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3));
-	return cr3;
-}
 
-EFI_STATUS EFIAPI efi_main(EFI_HANDLE handle, EFI_SYSTEM_TABLE *system_tbl) {
-	InitializeLib(handle, system_tbl);
-	Print(L"EFI ifdnsufdshouifhsdiuhfisudnitialized, efi_main() at 0x%lhx\n", (uint64_t)efi_main);
-
-	uint64_t cr0 = get_cr0();
-	uint64_t *cr3 = get_cr3();
-	Print(L"CR0 is 0x%lhx, CR3 at 0x%lhx\n", cr0, (uint64_t)cr3);
-
-	for (int i = 0; i < (1 << 9); i++) {
-		if (cr3[i] & 1) {
-			/* Present */
-			Print(L"CR3[%d] entry 0x%lhx\n", i, cr3[i]);
+bool kbd_init(void) {
+	{
+		EFI_STATUS status = uefi_call_wrapper(BS->LocateProtocol, 3, &((EFI_GUID)EFI_SIMPLE_TEXT_INPUT_PROTOCOL_GUID), NULL, (void**)&protocol);
+		if (EFI_ERROR(status)) {
+			Print(L"LocateProtocol failed.\n");
+			return false;
 		}
 	}
+	return true;
+}
 
-	Print(L"Press any key to terminate EFI application...");
-	Pause();
-	return EFI_SUCCESS;
+uint32_t kbd_readkey(void) {
+	EFI_KEY_DATA key_data;
+	EFI_STATUS status = uefi_call_wrapper(protocol->ReadKeyStrokeEx, 2, protocol, &key_data);
+	if (status == EFI_NOT_READY) {
+		/* No key to read */
+		return 0;
+	} else {
+		return key_data.Key.UnicodeChar;
+	}
+}
+
+void kbd_waitkey(uint32_t key) {
+	while (kbd_readkey() != key);
+}
+
+bool kbd_yesno(void) {
+	uint32_t key;
+	while (true) {
+		key = kbd_readkey();
+		if ((key == 'y') || (key == 'Y')) {
+			return true;
+		} else if ((key == 'n') || (key == 'N')) {
+			return false;
+		}
+	}
 }

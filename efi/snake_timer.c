@@ -23,37 +23,37 @@
 
 #include <efi.h>
 #include <efilib.h>
-#include <stdint.h>
+#include <efibind.h>
 #include <stdbool.h>
+#include "snake_timer.h"
 
-static uint64_t get_cr0(void) {
-	uint64_t cr0;
-	__asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
-	return cr0;
-}
+static EFI_EVENT timer_event;
 
-static uint64_t* get_cr3(void) {
-	uint64_t *cr3;
-	__asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3));
-	return cr3;
-}
-
-EFI_STATUS EFIAPI efi_main(EFI_HANDLE handle, EFI_SYSTEM_TABLE *system_tbl) {
-	InitializeLib(handle, system_tbl);
-	Print(L"EFI ifdnsufdshouifhsdiuhfisudnitialized, efi_main() at 0x%lhx\n", (uint64_t)efi_main);
-
-	uint64_t cr0 = get_cr0();
-	uint64_t *cr3 = get_cr3();
-	Print(L"CR0 is 0x%lhx, CR3 at 0x%lhx\n", cr0, (uint64_t)cr3);
-
-	for (int i = 0; i < (1 << 9); i++) {
-		if (cr3[i] & 1) {
-			/* Present */
-			Print(L"CR3[%d] entry 0x%lhx\n", i, cr3[i]);
+bool timer_set(const unsigned int frequency_hz) {
+	const uint64_t delay = (uint64_t)10000000 / frequency_hz;
+	{
+		EFI_STATUS status = uefi_call_wrapper(BS->CreateEvent, 5, EVT_TIMER, TPL_NOTIFY, NULL, NULL, &timer_event);
+		if (EFI_ERROR(status)) {
+			Print(L"Unable to CreateEvent.\n");
+			return false;
 		}
 	}
+	{
+		EFI_STATUS status = uefi_call_wrapper(BS->SetTimer, 3, timer_event, TimerPeriodic, delay);
+		if (EFI_ERROR(status)) {
+			Print(L"Unable to SetTimer.\n");
+			return false;
+		}
+	}
+	return true;
+}
 
-	Print(L"Press any key to terminate EFI application...");
-	Pause();
-	return EFI_SUCCESS;
+void timer_wait(void) {
+	UINTN index;
+	uefi_call_wrapper(BS->WaitForEvent, 3, 1, &timer_event, &index);
+}
+
+void timer_disable(void) {
+	uefi_call_wrapper(BS->SetTimer, 3, &timer_event, TimerCancel, 0);
+	uefi_call_wrapper(BS->CloseEvent, 1, timer_event);
 }

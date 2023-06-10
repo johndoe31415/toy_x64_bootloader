@@ -23,37 +23,39 @@
 
 #include <efi.h>
 #include <efilib.h>
+#include <efibind.h>
 #include <stdint.h>
 #include <stdbool.h>
-
-static uint64_t get_cr0(void) {
-	uint64_t cr0;
-	__asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
-	return cr0;
-}
-
-static uint64_t* get_cr3(void) {
-	uint64_t *cr3;
-	__asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3));
-	return cr3;
-}
+#include "snake_gfx.h"
+#include "snake_kbd.h"
+#include "snake_game.h"
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE handle, EFI_SYSTEM_TABLE *system_tbl) {
 	InitializeLib(handle, system_tbl);
-	Print(L"EFI ifdnsufdshouifhsdiuhfisudnitialized, efi_main() at 0x%lhx\n", (uint64_t)efi_main);
 
-	uint64_t cr0 = get_cr0();
-	uint64_t *cr3 = get_cr3();
-	Print(L"CR0 is 0x%lhx, CR3 at 0x%lhx\n", cr0, (uint64_t)cr3);
+	if (!gfx_init()) {
+		Print(L"GFX initialization failed, sad :(\n");
+		Pause();
+		return EFI_UNSUPPORTED;
+	}
 
-	for (int i = 0; i < (1 << 9); i++) {
-		if (cr3[i] & 1) {
-			/* Present */
-			Print(L"CR3[%d] entry 0x%lhx\n", i, cr3[i]);
+	if (!kbd_init()) {
+		Print(L"Keyboard initialization failed, sad :(\n");
+		Pause();
+		return EFI_UNSUPPORTED;
+	}
+
+	unsigned int screen_width, screen_height;
+	gfx_get_resolution(&screen_width, &screen_height);
+
+	while (true) {
+		struct snake_game_t game;
+		snake_game_init(&game, screen_width - 100, screen_height - 100, 50, 50);
+		bool play_again = snake_game_play(&game);
+		if (!play_again) {
+			break;
 		}
 	}
 
-	Print(L"Press any key to terminate EFI application...");
-	Pause();
 	return EFI_SUCCESS;
 }

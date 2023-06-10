@@ -21,39 +21,21 @@
 	Johannes Bauer <JohannesBauer@gmx.de>
 */
 
-#include <efi.h>
-#include <efilib.h>
+#ifndef __SNAKE_GFX_H__
+#define __SNAKE_GFX_H__
+
 #include <stdint.h>
 #include <stdbool.h>
 
-static uint64_t get_cr0(void) {
-	uint64_t cr0;
-	__asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
-	return cr0;
-}
+#define COLOR_BLACK 0
 
-static uint64_t* get_cr3(void) {
-	uint64_t *cr3;
-	__asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3));
-	return cr3;
-}
+/*************** AUTO GENERATED SECTION FOLLOWS ***************/
+void gfx_get_resolution(unsigned int *screen_width, unsigned int *screen_height);
+void gfx_draw_pixel(unsigned int x, unsigned int y, uint32_t pixel);
+void gfx_test_pattern(void);
+void gfx_fill(unsigned int xoffset, unsigned int yoffset, unsigned int width, unsigned int height, uint32_t pixel);
+void gfx_fill_screen(uint32_t pixel);
+bool gfx_init(void);
+/***************  AUTO GENERATED SECTION ENDS   ***************/
 
-EFI_STATUS EFIAPI efi_main(EFI_HANDLE handle, EFI_SYSTEM_TABLE *system_tbl) {
-	InitializeLib(handle, system_tbl);
-	Print(L"EFI ifdnsufdshouifhsdiuhfisudnitialized, efi_main() at 0x%lhx\n", (uint64_t)efi_main);
-
-	uint64_t cr0 = get_cr0();
-	uint64_t *cr3 = get_cr3();
-	Print(L"CR0 is 0x%lhx, CR3 at 0x%lhx\n", cr0, (uint64_t)cr3);
-
-	for (int i = 0; i < (1 << 9); i++) {
-		if (cr3[i] & 1) {
-			/* Present */
-			Print(L"CR3[%d] entry 0x%lhx\n", i, cr3[i]);
-		}
-	}
-
-	Print(L"Press any key to terminate EFI application...");
-	Pause();
-	return EFI_SUCCESS;
-}
+#endif

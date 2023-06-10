@@ -21,39 +21,16 @@
 	Johannes Bauer <JohannesBauer@gmx.de>
 */
 
-#include <efi.h>
-#include <efilib.h>
-#include <stdint.h>
+#ifndef __SNAKE_KBD_H__
+#define __SNAKE_KBD_H__
+
 #include <stdbool.h>
 
-static uint64_t get_cr0(void) {
-	uint64_t cr0;
-	__asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
-	return cr0;
-}
+/*************** AUTO GENERATED SECTION FOLLOWS ***************/
+bool kbd_init(void);
+uint32_t kbd_readkey(void);
+void kbd_waitkey(uint32_t key);
+bool kbd_yesno(void);
+/***************  AUTO GENERATED SECTION ENDS   ***************/
 
-static uint64_t* get_cr3(void) {
-	uint64_t *cr3;
-	__asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3));
-	return cr3;
-}
-
-EFI_STATUS EFIAPI efi_main(EFI_HANDLE handle, EFI_SYSTEM_TABLE *system_tbl) {
-	InitializeLib(handle, system_tbl);
-	Print(L"EFI ifdnsufdshouifhsdiuhfisudnitialized, efi_main() at 0x%lhx\n", (uint64_t)efi_main);
-
-	uint64_t cr0 = get_cr0();
-	uint64_t *cr3 = get_cr3();
-	Print(L"CR0 is 0x%lhx, CR3 at 0x%lhx\n", cr0, (uint64_t)cr3);
-
-	for (int i = 0; i < (1 << 9); i++) {
-		if (cr3[i] & 1) {
-			/* Present */
-			Print(L"CR3[%d] entry 0x%lhx\n", i, cr3[i]);
-		}
-	}
-
-	Print(L"Press any key to terminate EFI application...");
-	Pause();
-	return EFI_SUCCESS;
-}
+#endif

@@ -1,5 +1,5 @@
 root
 OVMF.fd
-bootx64.efi
-bootx64.o
-bootx64.so
+*.efi
+*.so
+*.o

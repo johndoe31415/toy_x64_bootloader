@@ -7,9 +7,9 @@ x86_64 system. It uses the GNU toolchain and AT&T style assembly.
 ## Stage 0: MBR (assembly only)
 The file that is always required is an assembly file that gets written into the
 MBR. Its size is limited to 440 bytes (by restriction of the MBR). During boot,
-it is located at linear 0x7c00 as defined by the IBM compatible specification.
-Usually, it uses `int 10h` and `int 13h` to change the display and load the
-next stage from disk using BIOS function calls.
+it is located at linear 0x7c00 as defined by the IBM compatible PC
+specification.  Usually, it uses `int 10h` and `int 13h` to change the display
+and load the next stage from disk using BIOS function calls.
 
 In the long-mode example, the MBR loader already performs the switch to
 protected mode, but does not enable paging yet. It loads the stage 1 code to
@@ -85,6 +85,44 @@ The last command will compile all files into the `target/` directory and
 automatically run the QEMU image:
 
 ![Screenshot of QEMU running the example](https://raw.githubusercontent.com/johndoe31415/toy_x64_bootloader/main/docs/longmode_example_qemu.png)
+
+## UEFI bootloading
+There's a second example provided that functions entirely different; it does
+not use BIOS boot, but instead uses x86_64 UEFI. This is much more powerful and
+also boring, because UEFI does all the hard work for you. An EFI bootloader is
+literally a EXE-file (PE) on a VFAT partition, that's it.
+
+To demonstrate what is possible, I've coded a snake example, called uefisnek.
+After all, the real thrill of playing computer games is when your game runs in
+ring 0 with identity-mapped physical memory.
+
+You can easily build it using gnuefi and the provided Makefile. For your
+playing convenience, I've also provided `binary/uefisnek.efi` as a compiled
+binary that should just run out-of-the-box.
+
+If you want to configure grub to chainload uefisnek, it is easiest to place
+`uefisnek.efi` in your UEFI partition at `/EFI/uefisnek/uefisnek.efi`, edit
+`/etc/grub.d/40-custom` and append the following:
+
+```
+menuentry 'UEFI Snek' {
+	insmod part_gpt
+	insmod fat
+	search --no-floppy --fs-uuid --set=root C693-8150
+	chainloader /EFI/uefisnek/uefisnek.efi
+}
+```
+
+You only have to fix your EFI partition ID (`C693-8150` in my case) and you
+should be able to run uefisnek on bare metal.
+
+![Screenshot of QEMU running uefisnek](https://raw.githubusercontent.com/johndoe31415/toy_x64_bootloader/main/docs/uefisnek.png)
+
+uefisnek uses a few interesting UEFI features such as graphics modes (it
+prefers full HD but works on other resolutions as well) and timers/events (so
+it should work at the same speed on every hardware). It uses a xorshift PRNG
+that is seeded by `rdtsc` measurements at keypresses. I attempted to use
+`rdrand`, but that made my UEFI crash. Not sure why.
 
 ## License
 GNU GPL-3.

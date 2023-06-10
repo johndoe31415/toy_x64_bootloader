@@ -103,7 +103,7 @@ main32_to_64:
 	call main64
 	
 	return_from_main64:
-	hlt
+		hlt
 	jmp return_from_main64		
 	
 
